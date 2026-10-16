@@ -1,0 +1,17 @@
+# Credentials and local settings
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+.px/
+.phoenix-data/
+.aws/
+
+# Environments and generated files
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+outputs/
+work/
