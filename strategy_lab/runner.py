@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
+import math
 import os
 from pathlib import Path
 
@@ -13,21 +15,51 @@ from strategy_lab.strategies import deliberately_leaky, momentum
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def read_demo_csv() -> bytes:
+    return (ROOT / "data" / "demo_prices.csv").read_bytes()
+
+
+def parse_prices_csv(content: bytes) -> tuple[list[float], list[dict[str, str]]]:
+    """Validate an uploaded close-price CSV and return prices plus preview rows."""
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError as error:
+        raise ValueError("CSV must use UTF-8 text encoding.") from error
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    if not reader.fieldnames or "close" not in {name.strip().lower() for name in reader.fieldnames}:
+        raise ValueError("CSV needs a 'close' column. A 'timestamp' column is optional.")
+    close_field = next(name for name in reader.fieldnames if name.strip().lower() == "close")
+    rows: list[dict[str, str]] = []
+    prices: list[float] = []
+    for line_number, row in enumerate(reader, start=2):
+        raw_close = row.get(close_field)
+        try:
+            price = float(raw_close) if raw_close is not None else math.nan
+        except (TypeError, ValueError):
+            raise ValueError(f"Row {line_number} has a non-numeric close price.") from None
+        if not math.isfinite(price) or price <= 0:
+            raise ValueError(f"Row {line_number} must have a finite, positive close price.")
+        prices.append(price)
+        rows.append({key: value or "" for key, value in row.items() if key is not None})
+    if len(prices) < 3:
+        raise ValueError("CSV needs at least three rows of prices.")
+    return prices, rows
+
+
 def read_demo_prices() -> list[float]:
-    with (ROOT / "data" / "demo_prices.csv").open(newline="", encoding="utf-8") as source:
-        return [float(row["close"]) for row in csv.DictReader(source)]
+    return parse_prices_csv(read_demo_csv())[0]
 
 
-def run_local_demo(stage: str) -> dict:
+def run_local_demo(stage: str, prices: list[float] | None = None) -> dict:
     """Run only built-in trusted functions; never exec generated source locally."""
     if stage not in {"initial", "repaired"}:
         raise ValueError("Unknown local demo stage")
-    prices = read_demo_prices()
+    prices = prices if prices is not None else read_demo_prices()
     fn = deliberately_leaky if stage == "initial" else momentum
     return harness.evaluate(prices, fn)
 
 
-def run_daytona(strategy_source: str) -> dict:
+def run_daytona(strategy_source: str, prices_csv: bytes | None = None) -> dict:
     """Upload the harness and candidate to a bounded, network-isolated sandbox."""
     if not os.getenv("DAYTONA_API_KEY"):
         raise RuntimeError("DAYTONA_API_KEY is not configured")
@@ -56,7 +88,7 @@ def run_daytona(strategy_source: str) -> dict:
             ),
             timeout=60,
         )
-        sandbox.fs.upload_file((ROOT / "data" / "demo_prices.csv").read_bytes(), "data.csv", timeout=15)
+        sandbox.fs.upload_file(prices_csv if prices_csv is not None else read_demo_csv(), "data.csv", timeout=15)
         sandbox.fs.upload_file((ROOT / "strategy_lab" / "harness.py").read_bytes(), "harness.py", timeout=15)
         sandbox.fs.upload_file(strategy_source.encode("utf-8"), "strategy.py", timeout=15)
         response = sandbox.process.exec("python3 harness.py data.csv strategy.py", timeout=45)
