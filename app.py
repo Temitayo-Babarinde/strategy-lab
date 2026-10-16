@@ -12,7 +12,7 @@ from opentelemetry.trace import Status, StatusCode
 
 from strategy_lab.agent import repair_strategy
 from strategy_lab.evals import evaluate_result, reportable, retry_eligible
-from strategy_lab.runner import run_daytona, run_local_demo
+from strategy_lab.runner import parse_prices_csv, read_demo_csv, run_daytona, run_local_demo
 from strategy_lab.sponsor_integrations import (
     anchor_configured,
     recall_prior_runs,
@@ -102,18 +102,38 @@ with st.sidebar:
         st.link_button("Open Phoenix traces", "http://localhost:6006")
 
 st.subheader("Strategy evaluation")
-st.caption("Seeded example / Synthetic prices / One correction")
+st.caption("Seeded example / Select a price dataset / One correction")
 if not daytona_ready:
     st.info("Rehearsal mode: only trusted, built-in strategies run locally.")
 if not (bedrock_ready or anthropic_ready):
     st.caption("Repair uses a fixed causal baseline. This run does not use an AI model to write code.")
+
+uploaded_csv = st.file_uploader("Price data CSV · optional", type=["csv"], help="Provide a CSV with a close column and at least three rows. A timestamp column is optional; other columns are shown in the preview but ignored by the current backtest.")
+csv_valid = True
+prices_csv = read_demo_csv()
+prices = None
+dataset_label = "Bundled synthetic example"
+if uploaded_csv is not None:
+    prices_csv = uploaded_csv.getvalue()
+    dataset_label = uploaded_csv.name
+    try:
+        prices, preview_rows = parse_prices_csv(prices_csv)
+        st.caption(f"Loaded {len(prices)} price rows from {uploaded_csv.name}.")
+        st.dataframe(preview_rows[:10], use_container_width=True, hide_index=True)
+        if daytona_ready:
+            st.info("For this run, the uploaded CSV will be sent to Daytona with the strategy and harness.")
+        else:
+            st.caption("The uploaded CSV stays local in rehearsal mode.")
+    except ValueError as error:
+        csv_valid = False
+        st.error(f"Could not use this CSV: {error}")
 
 with st.form("run_form"):
     hypothesis = st.text_input("Demo hypothesis", "Follow the previous price move: long after a flat or rising close, short after a falling close.")
     st.caption("Signals take effect on the next bar, with transaction costs. The first candidate is a fixed injected bug; editing this hypothesis does not generate a new first candidate.")
     with st.expander("Add a public research source · optional"):
         research_url = st.text_input("Public research URL for Anchor Browser", "")
-    submitted = st.form_submit_button("Run safety demo", type="primary")
+    submitted = st.form_submit_button("Run safety demo", type="primary", disabled=not csv_valid)
 
 if submitted:
     run_id = str(uuid4())
@@ -145,6 +165,10 @@ if submitted:
                 span.set_attribute("execution.disk_gib_limit", 8)
                 span.set_attribute("execution.timeout_seconds", 45)
         with st.status("Running the seeded failure through the evaluator…", expanded=True) as status:
+            if span:
+                span.set_attribute("dataset.name", dataset_label[:120])
+                span.set_attribute("dataset.custom_upload", uploaded_csv is not None)
+                span.set_attribute("dataset.rows", len(prices) if prices is not None else len(parse_prices_csv(prices_csv)[0]))
             source_evidence = ""
             prior_memory = ""
             if research_url.strip():
@@ -181,7 +205,7 @@ if submitted:
                     if span:
                         span.set_attribute("integration.memory_recall_succeeded", False)
             repair_attempted = False
-            initial = run_daytona(LEAKY_SOURCE) if daytona_ready else run_local_demo("initial")
+            initial = run_daytona(LEAKY_SOURCE, prices_csv) if daytona_ready else run_local_demo("initial", prices)
             first_checks = evaluate_result(initial)
             initial_lookahead = initial.get("lookahead", {}) if isinstance(initial, dict) else {}
             if span:
@@ -219,7 +243,7 @@ if submitted:
                     repair_mode = "trusted_local_demo"
                 st.write("**Agent decision:** the failed safety gate triggered repair attempt 1/1.")
                 st.write(repair_note)
-                result = run_daytona(source) if daytona_ready else run_local_demo("repaired")
+                result = run_daytona(source, prices_csv) if daytona_ready else run_local_demo("repaired", prices)
                 checks = evaluate_result(result)
                 show_attempt_checks("Attempt 2 · repaired candidate", checks)
             else:
@@ -281,9 +305,9 @@ if submitted:
             columns[1].metric("Maximum drawdown", f"{metrics['max_drawdown']:.2%}")
             columns[2].metric("Position changes", str(metrics["trades"]))
             columns[3].metric("Sharpe (per bar)", f"{metrics['sharpe']:.2f}")
-            st.caption("Synthetic demo equity curve")
+            st.caption(f"Equity curve · {dataset_label}")
             st.line_chart(metrics["equity"])
-            st.caption("The sample series is synthetic. These figures demonstrate the evaluator and do not establish profitability or predict live performance.")
+            st.caption("These figures are illustrative backtest outputs. They do not establish profitability or predict live performance.")
             with st.expander("Show repaired strategy code"):
                 st.code(source, language="python")
         else:
@@ -330,7 +354,8 @@ with st.expander("How the demo works · integrations and limits"):
         "- **Anchor Browser:** optionally reads a public research page and provides untrusted context for the repair; it does not submit forms.\n"
         "- **SurrealDB Agent Memory:** optionally recalls prior runs and stores each final evaluation for future repairs.\n"
         "- **Tracing:** Phoenix OSS or Arize AX Cloud records the run and pass/fail evaluation attributes.\n"
-        "- **Safety boundary:** only the Daytona path executes model-generated source; local demo mode calls trusted built-in functions. The requested Daytona resource and network settings are recorded in the trace; the containment probe checks observed behavior."
+        "- **Custom price data:** upload a UTF-8 CSV with a `close` column and at least three finite, positive prices. A `timestamp` column is optional; additional columns are previewed but ignored. Daytona mode sends the uploaded CSV to Daytona for the run; local rehearsal keeps it on this computer."
+        "\n- **Safety boundary:** only the Daytona path executes model-generated source; local demo mode calls trusted built-in functions. The requested Daytona resource and network settings are recorded in the trace; the containment probe checks observed behavior."
     )
 
 st.divider()
