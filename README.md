@@ -13,6 +13,10 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+## Use your own price data
+
+Upload a UTF-8 CSV with a `close` column and at least three finite, positive prices using the **Price data CSV** control. A `timestamp` column is optional. Other columns appear in the preview but are ignored by the current backtest. If Daytona is configured, the uploaded CSV is sent to Daytona for sandbox execution; in local rehearsal mode it stays on your computer. The app validates the data before enabling a run and shows the first ten rows as a preview.
+
 With no credentials, the app runs only trusted, built-in demonstration functions locally. It labels this mode in the UI and does not execute generated code on your computer.
 
 ## Connect Phoenix and the event services
