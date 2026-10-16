@@ -166,8 +166,8 @@ if submitted:
                 span.set_attribute("execution.timeout_seconds", 45)
         with st.status("Running the seeded failure through the evaluator…", expanded=True) as status:
             if span:
-                span.set_attribute("dataset.name", dataset_label[:120])
                 span.set_attribute("dataset.custom_upload", uploaded_csv is not None)
+                span.set_attribute("dataset.source", "custom_upload" if uploaded_csv is not None else "bundled_synthetic")
                 span.set_attribute("dataset.rows", len(prices) if prices is not None else len(parse_prices_csv(prices_csv)[0]))
             source_evidence = ""
             prior_memory = ""
